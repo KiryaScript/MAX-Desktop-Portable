@@ -1,0 +1,2699 @@
+import sys
+import mimetypes
+import os
+import json
+import platform
+import datetime
+import hashlib
+import shutil
+import ctypes
+from pathlib import Path
+from dataclasses import dataclass
+from typing import Dict, Any, Optional
+
+from PyQt6.QtCore import (
+    QUrl, Qt, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve,
+    QSize, QPoint, QRect, pyqtProperty, QParallelAnimationGroup,
+    QSequentialAnimationGroup
+)
+from PyQt6.QtGui import (
+    QIcon, QAction, QDesktopServices, QShortcut, QKeySequence,
+    QColor, QPainter, QPainterPath, QLinearGradient, QFont,
+    QFontDatabase, QPen, QBrush, QPixmap, QCursor
+)
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QStackedWidget, QInputDialog, QLabel, QDialog,
+    QComboBox, QFormLayout, QTabWidget, QCheckBox, QSystemTrayIcon, QMenu,
+    QMessageBox, QProgressBar, QLineEdit, QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect, QSizePolicy, QSpacerItem, QFrame,
+    QScrollArea, QToolTip, QSplashScreen
+)
+from PyQt6.QtNetwork import QNetworkProxy
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import (
+    QWebEngineProfile, QWebEngineScript, QWebEngineSettings, QWebEnginePage
+)
+
+try:
+    from PyQt6.QtWebEngineCore import QWebEngineDownloadRequest
+except ImportError:
+    QWebEngineDownloadRequest = None
+
+
+# ─────────────────────────────────────────────
+# Версия и константы
+# ─────────────────────────────────────────────
+APP_VERSION = "2.0.0"
+APP_NAME = "MAX Desktop"
+
+# Цветовая палитра приложения
+class Colors:
+    # Основные фоны
+    BG_DARKEST = "#0a0e14"
+    BG_DARKER = "#0f1923"
+    BG_DARK = "#141e2b"
+    BG_PRIMARY = "#1a2332"
+    BG_SECONDARY = "#1f2b3d"
+    BG_ELEVATED = "#243147"
+    BG_HOVER = "#2a3a52"
+
+    # Акценты
+    ACCENT = "#6c7bf2"
+    ACCENT_HOVER = "#5865f2"
+    ACCENT_ACTIVE = "#4752c4"
+    ACCENT_GLOW = "rgba(108, 123, 242, 0.15)"
+    ACCENT_GRADIENT_START = "#6c7bf2"
+    ACCENT_GRADIENT_END = "#8b5cf6"
+
+    # Текст
+    TEXT_PRIMARY = "#e8edf3"
+    TEXT_SECONDARY = "#8899aa"
+    TEXT_MUTED = "#5c6e80"
+
+    # Состояния
+    SUCCESS = "#34d399"
+    SUCCESS_HOVER = "#10b981"
+    DANGER = "#f87171"
+    DANGER_HOVER = "#ef4444"
+    WARNING = "#fbbf24"
+
+    # Границы
+    BORDER = "#1e2d40"
+    BORDER_HOVER = "#2a3f5a"
+
+    # Прозрачные оверлеи
+    OVERLAY = "rgba(10, 14, 20, 0.85)"
+    GLASS = "rgba(26, 35, 50, 0.65)"
+
+
+def resource_path(relative_path: str) -> str:
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+
+def get_app_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent
+
+
+CONFIG_FILE = get_app_dir() / "config.json"
+WINDOW_STATE_FILE = get_app_dir() / ".window_state.json"
+DEFAULT_PROXY = {"type": "Нет", "host": "", "port": ""}
+
+
+def safe_dir_name(name: str) -> str:
+    cleaned = "".join(
+        c if c.isalnum() or c in ("-", "_", " ") else "_"
+        for c in name.strip()
+    ).strip()
+    return cleaned or "profile"
+
+
+def profile_storage_id(name: str) -> str:
+    return hashlib.sha1(name.encode("utf-8")).hexdigest()[:16]
+
+
+def unique_path(directory: Path, filename: str) -> Path:
+    target = directory / filename
+    if not target.exists():
+        return target
+
+    stem = target.stem
+    suffix = target.suffix
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return directory / f"{stem}_{timestamp}{suffix}"
+
+
+def apply_startup_proxy_env():
+    """
+    QtWebEngine/Chromium лучше всего подхватывает прокси через
+    QTWEBENGINE_CHROMIUM_FLAGS до создания QApplication.
+    """
+    try:
+        if not CONFIG_FILE.exists():
+            return
+
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        proxy = data.get("global", {}).get("proxy", {})
+        ptype = proxy.get("type", "Нет")
+        host = str(proxy.get("host", "")).strip()
+        port = str(proxy.get("port", "")).strip()
+
+        if ptype != "Нет" and host and port.isdigit():
+            scheme = "socks5" if ptype == "SOCKS5" else "http"
+            proxy_server = f"{scheme}://{host}:{port}"
+
+            flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
+            if "--proxy-server=" not in flags:
+                flags = f"{flags} --proxy-server={proxy_server}".strip()
+                os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = flags
+
+    except Exception:
+        pass
+
+
+def apply_qt_proxy(proxy_cfg: dict):
+    """
+    Глобальный Qt-прокси. Он не всегда полностью покрывает Chromium,
+    поэтому выше есть apply_startup_proxy_env.
+    """
+    try:
+        proxy_cfg = proxy_cfg or {}
+        ptype = proxy_cfg.get("type", "Нет")
+        host = str(proxy_cfg.get("host", "")).strip()
+        port_text = str(proxy_cfg.get("port", "")).strip()
+
+        if ptype != "Нет" and host and port_text.isdigit():
+            proxy_type = (
+                QNetworkProxy.ProxyType.HttpProxy
+                if ptype == "HTTP"
+                else QNetworkProxy.ProxyType.Socks5Proxy
+            )
+            QNetworkProxy.setApplicationProxy(
+                QNetworkProxy(proxy_type, host, int(port_text))
+            )
+        else:
+            QNetworkProxy.setApplicationProxy(
+                QNetworkProxy(QNetworkProxy.ProxyType.NoProxy)
+            )
+    except Exception:
+        pass
+
+
+def safe_set_web_setting(settings, attr_name: str, value: bool):
+    if not settings:
+        return
+
+    try:
+        attr = getattr(QWebEngineSettings.WebAttribute, attr_name)
+        settings.setAttribute(attr, value)
+    except Exception:
+        pass
+
+
+@dataclass
+class DeviceMask:
+    ua: str
+    platform: str
+    vendor: str
+    renderer: str
+    touch: int
+    width: int
+    height: int
+    timezone: str
+    locale: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return self.__dict__
+
+
+MASKS_DB = {
+    "Windows 11 (Chrome)": DeviceMask(
+        ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        platform="Win32",
+        vendor="Google Inc.",
+        renderer="ANGLE (NVIDIA, RTX 3060, D3D11)",
+        touch=0,
+        width=1920,
+        height=1080,
+        timezone="Europe/Moscow",
+        locale="ru-RU"
+    ),
+    "macOS (Safari)": DeviceMask(
+        ua="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        platform="MacIntel",
+        vendor="Apple Computer, Inc.",
+        renderer="Apple GPU",
+        touch=0,
+        width=2560,
+        height=1600,
+        timezone="Europe/London",
+        locale="en-GB"
+    ),
+    "Linux (Firefox)": DeviceMask(
+        ua="Mozilla/5.0 (X11; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0",
+        platform="Linux x86_64",
+        vendor="Mozilla",
+        renderer="Mesa",
+        touch=0,
+        width=1920,
+        height=1080,
+        timezone="Europe/Moscow",
+        locale="ru-RU"
+    )
+}
+
+
+THEMES = {
+    "MAX Original": "",
+    "Telegram Dark": """
+        :root {
+            --tg-theme-bg-color: #17212b !important;
+            --tg-theme-secondary-bg-color: #0e1621 !important;
+            --tg-theme-text-color: #ffffff !important;
+            --tg-theme-hint-color: #8b9fad !important;
+            --tg-theme-link-color: #5865f2 !important;
+            --tg-theme-button-color: #5865f2 !important;
+            --tg-theme-bottom-bar-bg-color: #17212b !important;
+            --tg-theme-accent-text-color: #ffffff !important;
+            --tg-theme-section-bg-color: #17212b !important;
+            --tg-theme-header-bg-color: #17212b !important;
+            --tg-theme-subtitle-text-color: #8b9fad !important;
+            --tg-theme-destructive-text-color: #e81123 !important;
+        }
+
+        body,
+        .main-container,
+        .sidebar,
+        .chat-list,
+        .message-item,
+        .app-container {
+            background-color: #17212b !important;
+            color: #ffffff !important;
+        }
+
+        .message-in,
+        .incoming-message {
+            background-color: #182533 !important;
+        }
+
+        .message-out,
+        .outgoing-message {
+            background-color: #2b5278 !important;
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #2b5278;
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        input,
+        textarea,
+        .search-bar {
+            background-color: #232e3c !important;
+            color: #ffffff !important;
+            border: 1px solid #2b5278 !important;
+        }
+    """,
+    "AMOLED Black": """
+        body,
+        .main-container,
+        .sidebar,
+        .chat-list,
+        .message-item,
+        .app-container {
+            background-color: #000000 !important;
+            color: #ffffff !important;
+        }
+
+        .message-in,
+        .incoming-message {
+            background-color: #111111 !important;
+        }
+
+        .message-out,
+        .outgoing-message {
+            background-color: #1e1e1e !important;
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #333333;
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+    """,
+    "Nord": """
+        body,
+        .main-container,
+        .sidebar,
+        .chat-list,
+        .message-item,
+        .app-container {
+            background-color: #2e3440 !important;
+            color: #eceff4 !important;
+        }
+
+        .message-in,
+        .incoming-message {
+            background-color: #3b4252 !important;
+        }
+
+        .message-out,
+        .outgoing-message {
+            background-color: #434c5e !important;
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #4c566a;
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        input,
+        textarea,
+        .search-bar {
+            background-color: #3b4252 !important;
+            color: #eceff4 !important;
+            border: 1px solid #4c566a !important;
+        }
+    """,
+    "Monokai": """
+        body,
+        .main-container,
+        .sidebar,
+        .chat-list,
+        .message-item,
+        .app-container {
+            background-color: #272822 !important;
+            color: #f8f8f2 !important;
+        }
+
+        .message-in,
+        .incoming-message {
+            background-color: #3e3d32 !important;
+        }
+
+        .message-out,
+        .outgoing-message {
+            background-color: #49483e !important;
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #75715e;
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        input,
+        textarea,
+        .search-bar {
+            background-color: #3e3d32 !important;
+            color: #f8f8f2 !important;
+            border: 1px solid #75715e !important;
+        }
+    """
+}
+
+
+OFFLINE_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: linear-gradient(135deg, #0a0e14 0%, #141e2b 50%, #0f1923 100%);
+            color: #8899aa;
+            font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            text-align: center;
+            overflow: hidden;
+        }
+
+        .container {
+            max-width: 460px;
+            padding: 48px;
+            background: rgba(26, 35, 50, 0.6);
+            border: 1px solid rgba(108, 123, 242, 0.15);
+            border-radius: 24px;
+            backdrop-filter: blur(20px);
+            animation: fadeInUp 0.6s ease-out;
+        }
+
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 24px;
+            background: linear-gradient(135deg, rgba(108, 123, 242, 0.2), rgba(139, 92, 246, 0.2));
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 40px;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.05); opacity: 0.8; }
+        }
+
+        h1 {
+            color: #e8edf3;
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            letter-spacing: -0.3px;
+        }
+
+        p {
+            font-size: 14px;
+            line-height: 1.7;
+            color: #8899aa;
+        }
+
+        .dots {
+            display: flex;
+            gap: 6px;
+            justify-content: center;
+            margin-top: 28px;
+        }
+
+        .dots span {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #6c7bf2;
+            animation: dotPulse 1.4s ease-in-out infinite;
+        }
+
+        .dots span:nth-child(2) { animation-delay: 0.2s; }
+        .dots span:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes dotPulse {
+            0%, 100% { opacity: 0.3; transform: scale(0.8); }
+            50% { opacity: 1; transform: scale(1.2); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">📡</div>
+        <h1>Ожидание подключения</h1>
+        <p>
+            Нет подключения к интернету.<br>
+            Приложение автоматически восстановит связь,<br>
+            когда появится сеть.
+        </p>
+        <div class="dots">
+            <span></span>
+            <span></span>
+            <span></span>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+# ─────────────────────────────────────────────
+# Глобальный стиль QToolTip
+# ─────────────────────────────────────────────
+GLOBAL_TOOLTIP_STYLE = f"""
+    QToolTip {{
+        background-color: {Colors.BG_ELEVATED};
+        color: {Colors.TEXT_PRIMARY};
+        border: 1px solid {Colors.BORDER_HOVER};
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 12px;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+    }}
+"""
+
+
+# ─────────────────────────────────────────────
+# Виджет уведомлений (toast notifications)
+# ─────────────────────────────────────────────
+class ToastNotification(QWidget):
+    """Анимированное всплывающее уведомление."""
+
+    def __init__(self, parent, message: str, icon: str = "ℹ️",
+                 duration: int = 3000, toast_type: str = "info"):
+        super().__init__(parent)
+        self.setFixedHeight(52)
+        self.setMinimumWidth(280)
+        self.setMaximumWidth(450)
+
+        bg_color = Colors.BG_ELEVATED
+        border_color = Colors.ACCENT
+        if toast_type == "success":
+            border_color = Colors.SUCCESS
+        elif toast_type == "error":
+            border_color = Colors.DANGER
+        elif toast_type == "warning":
+            border_color = Colors.WARNING
+
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {bg_color};
+                border: 1px solid {border_color};
+                border-radius: 12px;
+            }}
+            QLabel {{
+                color: {Colors.TEXT_PRIMARY};
+                font-size: 13px;
+                font-weight: 500;
+                border: none;
+                background: transparent;
+            }}
+        """)
+
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 100))
+        self.setGraphicsEffect(shadow)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 0, 16, 0)
+        layout.setSpacing(10)
+
+        icon_label = QLabel(icon)
+        icon_label.setFixedWidth(24)
+        icon_label.setStyleSheet("font-size: 18px;")
+        layout.addWidget(icon_label)
+
+        text_label = QLabel(message)
+        text_label.setWordWrap(True)
+        layout.addWidget(text_label)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(shadow)
+
+        # Позиция — правый нижний угол
+        parent_rect = parent.rect()
+        x = parent_rect.width() - self.width() - 20
+        y = parent_rect.height() - self.height() - 20
+        self.move(x, y)
+
+        self.show()
+        self.raise_()
+
+        # Автоскрытие
+        QTimer.singleShot(duration, self._fade_out)
+
+    def _fade_out(self):
+        try:
+            self.deleteLater()
+        except Exception:
+            pass
+
+
+# ─────────────────────────────────────────────
+# Кастомный WebView с Ctrl+Scroll зумом
+# ─────────────────────────────────────────────
+class CustomWebView(QWebEngineView):
+    def wheelEvent(self, event):
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            current_zoom = self.zoomFactor()
+
+            if delta > 0:
+                self.setZoomFactor(min(current_zoom + 0.1, 3.0))
+            else:
+                self.setZoomFactor(max(current_zoom - 0.1, 0.5))
+
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+
+# ─────────────────────────────────────────────
+# Кастомная страница с поддержкой popup-окон
+# ─────────────────────────────────────────────
+class CustomWebPage(QWebEnginePage):
+    def __init__(self, profile, parent=None):
+        super().__init__(profile, parent)
+        self._popups = []
+
+    def createWindow(self, windowType):
+        popup = QMainWindow()
+        popup.setWindowTitle(f"{APP_NAME}")
+        popup.resize(1000, 800)
+        popup.setStyleSheet(f"QMainWindow {{ background-color: {Colors.BG_PRIMARY}; }}")
+
+        icon_path = resource_path("max.ico")
+        if os.path.exists(icon_path):
+            popup.setWindowIcon(QIcon(icon_path))
+
+        view = QWebEngineView(popup)
+        page = CustomWebPage(self.profile(), view)
+        view.setPage(page)
+
+        popup.setCentralWidget(view)
+        popup.show()
+
+        self._popups.append(popup)
+        return page
+
+
+# ─────────────────────────────────────────────
+# Верхняя панель (Title Bar)
+# ─────────────────────────────────────────────
+class TopBar(QWidget):
+    def __init__(self, host):
+        super().__init__(host)
+        self.host = host
+        self.setFixedHeight(46)
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {Colors.BG_DARKEST};
+                border: none;
+            }}
+
+            QLabel {{
+                color: {Colors.TEXT_PRIMARY};
+                font-weight: 600;
+                font-size: 13px;
+                letter-spacing: 0.3px;
+                border: none;
+                background: transparent;
+            }}
+
+            QPushButton {{
+                background-color: transparent;
+                color: {Colors.TEXT_SECONDARY};
+                border: none;
+                border-radius: 6px;
+                font-size: 14px;
+                font-weight: 500;
+            }}
+
+            QPushButton:hover {{
+                background-color: {Colors.BG_HOVER};
+                color: {Colors.TEXT_PRIMARY};
+            }}
+
+            QPushButton:pressed {{
+                background-color: {Colors.BG_ELEVATED};
+            }}
+        """)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 0, 12, 0)
+        layout.setSpacing(4)
+
+        # Логотип / Название
+        self.logo_label = QLabel("✦")
+        self.logo_label.setStyleSheet(f"""
+            color: {Colors.ACCENT};
+            font-size: 18px;
+            font-weight: bold;
+        """)
+        layout.addWidget(self.logo_label)
+
+        self.title = QLabel(APP_NAME)
+        self.title.setStyleSheet(f"""
+            color: {Colors.TEXT_PRIMARY};
+            font-weight: 700;
+            font-size: 13px;
+            letter-spacing: 0.5px;
+        """)
+        layout.addWidget(self.title)
+
+        self.version_label = QLabel(f"v{APP_VERSION}")
+        self.version_label.setStyleSheet(f"""
+            color: {Colors.TEXT_MUTED};
+            font-weight: 400;
+            font-size: 11px;
+            margin-left: 4px;
+        """)
+        layout.addWidget(self.version_label)
+
+        layout.addSpacing(16)
+
+        # Разделитель
+        sep = QFrame()
+        sep.setFixedSize(1, 22)
+        sep.setStyleSheet(f"background-color: {Colors.BORDER};")
+        layout.addWidget(sep)
+
+        layout.addSpacing(8)
+
+        # Навигация
+        self.btn_back = self._nav_button("◀", "Назад (Alt+Left)")
+        self.btn_forward = self._nav_button("▶", "Вперёд (Alt+Right)")
+        self.btn_reload = self._nav_button("⟳", "Обновить (Ctrl+R)")
+
+        self.btn_back.clicked.connect(self.host.go_back)
+        self.btn_forward.clicked.connect(self.host.go_forward)
+        self.btn_reload.clicked.connect(self.host.reload_page)
+
+        layout.addWidget(self.btn_back)
+        layout.addWidget(self.btn_forward)
+        layout.addWidget(self.btn_reload)
+
+        layout.addStretch()
+
+        # Профиль
+        self.profile_label = QLabel("")
+        self.profile_label.setStyleSheet(f"""
+            color: {Colors.TEXT_SECONDARY};
+            font-weight: 500;
+            font-size: 12px;
+            padding: 4px 10px;
+            background-color: {Colors.BG_SECONDARY};
+            border-radius: 10px;
+        """)
+        layout.addWidget(self.profile_label)
+
+        layout.addSpacing(8)
+
+        # Индикатор подключения
+        self.connection_dot = QLabel("●")
+        self.connection_dot.setFixedSize(20, 20)
+        self.connection_dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.connection_dot.setStyleSheet(f"color: {Colors.SUCCESS}; font-size: 9px;")
+        self.connection_dot.setToolTip("Подключено")
+        layout.addWidget(self.connection_dot)
+
+    def _nav_button(self, text: str, tooltip: str) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setFixedSize(32, 32)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setToolTip(tooltip)
+        return btn
+
+    def set_connection_status(self, connected: bool):
+        if connected:
+            self.connection_dot.setStyleSheet(f"color: {Colors.SUCCESS}; font-size: 9px;")
+            self.connection_dot.setToolTip("Подключено")
+        else:
+            self.connection_dot.setStyleSheet(f"color: {Colors.DANGER}; font-size: 9px;")
+            self.connection_dot.setToolTip("Нет соединения")
+
+
+# ─────────────────────────────────────────────
+# Боковая панель с аккаунтами
+# ─────────────────────────────────────────────
+class Sidebar(QWidget):
+    profile_clicked = pyqtSignal(int)
+    settings_clicked = pyqtSignal()
+    add_profile_clicked = pyqtSignal()
+
+    # Цвета аватаров профилей
+    AVATAR_COLORS = [
+        ("#6c7bf2", "#8b5cf6"),  # Indigo-purple
+        ("#34d399", "#10b981"),  # Green
+        ("#f87171", "#ef4444"),  # Red
+        ("#fbbf24", "#f59e0b"),  # Yellow
+        ("#60a5fa", "#3b82f6"),  # Blue
+        ("#f472b6", "#ec4899"),  # Pink
+        ("#a78bfa", "#8b5cf6"),  # Purple
+        ("#2dd4bf", "#14b8a6"),  # Teal
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(68)
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {Colors.BG_DARKEST};
+                border: none;
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 12, 0, 12)
+        layout.setSpacing(0)
+
+        # Контейнер профилей с прокруткой
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                border: none;
+                background: transparent;
+            }}
+            QScrollArea > QWidget > QWidget {{
+                background: transparent;
+            }}
+        """)
+
+        self.profile_widget = QWidget()
+        self.profile_container = QVBoxLayout(self.profile_widget)
+        self.profile_container.setContentsMargins(0, 0, 0, 0)
+        self.profile_container.setSpacing(6)
+        self.profile_container.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+
+        self.scroll_area.setWidget(self.profile_widget)
+        layout.addWidget(self.scroll_area)
+
+        layout.addStretch()
+
+        # Разделитель
+        sep_container = QWidget()
+        sep_container.setFixedHeight(20)
+        sep_layout = QHBoxLayout(sep_container)
+        sep_layout.setContentsMargins(16, 0, 16, 0)
+        sep = QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background-color: {Colors.BORDER};")
+        sep_layout.addWidget(sep)
+        layout.addWidget(sep_container)
+
+        # Кнопка добавления профиля
+        self.btn_add = QPushButton("+")
+        self.btn_add.setFixedSize(42, 42)
+        self.btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_add.setToolTip("Добавить профиль (Ctrl+T)")
+        self.btn_add.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {Colors.TEXT_MUTED};
+                border: 2px dashed {Colors.BORDER};
+                border-radius: 14px;
+                font-size: 20px;
+                font-weight: 300;
+            }}
+            QPushButton:hover {{
+                color: {Colors.ACCENT};
+                border-color: {Colors.ACCENT};
+                background-color: {Colors.ACCENT_GLOW};
+            }}
+        """)
+        self.btn_add.clicked.connect(self.add_profile_clicked.emit)
+        layout.addWidget(self.btn_add, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        layout.addSpacing(8)
+
+        # Кнопка настроек
+        self.btn_settings = QPushButton("⚙")
+        self.btn_settings.setFixedSize(42, 42)
+        self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_settings.setToolTip("Настройки")
+        self.btn_settings.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {Colors.TEXT_MUTED};
+                border: none;
+                border-radius: 14px;
+                font-size: 20px;
+            }}
+            QPushButton:hover {{
+                color: {Colors.TEXT_PRIMARY};
+                background-color: {Colors.BG_HOVER};
+            }}
+        """)
+        self.btn_settings.clicked.connect(self.settings_clicked.emit)
+        layout.addWidget(self.btn_settings, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self.profile_buttons: Dict[int, QPushButton] = {}
+
+    def _clear_profile_container(self):
+        while self.profile_container.count():
+            item = self.profile_container.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+        for button in self.profile_buttons.values():
+            button.deleteLater()
+
+        self.profile_buttons = {}
+
+    def rebuild(self, names, active_index: int):
+        self._clear_profile_container()
+
+        for index, name in enumerate(names):
+            label = name.strip()[0].upper() if name.strip() else "M"
+            color_pair = self.AVATAR_COLORS[index % len(self.AVATAR_COLORS)]
+
+            button = QPushButton(label)
+            button.setFixedSize(42, 42)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setToolTip(name)
+            button.clicked.connect(
+                lambda checked=False, i=index: self.profile_clicked.emit(i)
+            )
+
+            # Сохраняем цвета
+            button.setProperty("color_start", color_pair[0])
+            button.setProperty("color_end", color_pair[1])
+
+            self.profile_container.addWidget(
+                button,
+                alignment=Qt.AlignmentFlag.AlignHCenter
+            )
+            self.profile_buttons[index] = button
+
+        self.set_active(active_index)
+
+    def set_active(self, active_index: int):
+        for index, button in self.profile_buttons.items():
+            c1 = button.property("color_start") or Colors.ACCENT
+            c2 = button.property("color_end") or Colors.ACCENT_HOVER
+
+            if index == active_index:
+                button.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: qlineargradient(
+                            x1:0, y1:0, x2:1, y2:1,
+                            stop:0 {c1}, stop:1 {c2}
+                        );
+                        color: white;
+                        border-radius: 14px;
+                        font-size: 16px;
+                        font-weight: 700;
+                        border: none;
+                    }}
+                """)
+            else:
+                button.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {Colors.BG_SECONDARY};
+                        color: {Colors.TEXT_SECONDARY};
+                        border-radius: 14px;
+                        font-size: 16px;
+                        font-weight: 600;
+                        border: none;
+                    }}
+                    QPushButton:hover {{
+                        background-color: {Colors.BG_HOVER};
+                        color: {Colors.TEXT_PRIMARY};
+                    }}
+                """)
+
+
+# ─────────────────────────────────────────────
+# Статус-бар
+# ─────────────────────────────────────────────
+class StatusBar(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(26)
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {Colors.BG_DARKEST};
+                border-top: 1px solid {Colors.BORDER};
+            }}
+            QLabel {{
+                color: {Colors.TEXT_MUTED};
+                font-size: 11px;
+                border: none;
+                background: transparent;
+            }}
+        """)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 0, 12, 0)
+        layout.setSpacing(16)
+
+        self.url_label = QLabel("")
+        self.url_label.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 11px;")
+        layout.addWidget(self.url_label)
+
+        layout.addStretch()
+
+        self.zoom_label = QLabel("100%")
+        self.zoom_label.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 11px;")
+        layout.addWidget(self.zoom_label)
+
+        # Разделитель
+        sep = QLabel("│")
+        sep.setStyleSheet(f"color: {Colors.BORDER}; font-size: 11px;")
+        layout.addWidget(sep)
+
+        self.profile_label = QLabel("")
+        self.profile_label.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 11px;")
+        layout.addWidget(self.profile_label)
+
+    def update_url(self, url: str):
+        if len(url) > 80:
+            url = url[:77] + "…"
+        self.url_label.setText(url)
+
+    def update_zoom(self, zoom: float):
+        self.zoom_label.setText(f"{int(zoom * 100)}%")
+
+    def update_profile(self, name: str):
+        self.profile_label.setText(f"📎 {name}")
+
+
+# ─────────────────────────────────────────────
+# Браузерный виджет для профиля
+# ─────────────────────────────────────────────
+class ProfileBrowser(QWidget):
+    url_changed = pyqtSignal(str)
+    zoom_changed = pyqtSignal(float)
+    connection_changed = pyqtSignal(bool)
+
+    def __init__(self, profile_name: str, config: dict):
+        super().__init__()
+        self.profile_name = profile_name
+        self.config = config
+        self.active_downloads = []
+        self.current_download = None
+        self._is_connected = True
+
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
+
+        pid = profile_storage_id(profile_name)
+
+        storage_root = get_app_dir() / "storage" / pid
+        persistent_dir = storage_root / "persistent"
+        cache_dir = storage_root / "cache"
+
+        storage_root.mkdir(parents=True, exist_ok=True)
+        persistent_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # ВАЖНО: первый аргумент QWebEngineProfile — имя профиля, а не путь.
+        self.profile = QWebEngineProfile(f"max_{pid}", self)
+        self.profile.setPersistentStoragePath(str(persistent_dir))
+        self.profile.setCachePath(str(cache_dir))
+
+        try:
+            self.profile.setPersistentCookiesPolicy(
+                QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies
+            )
+        except Exception:
+            pass
+
+        self.profile.downloadRequested.connect(self.handle_download)
+
+        self.browser = CustomWebView(self)
+        self.page = CustomWebPage(self.profile, self.browser)
+        self.browser.setPage(self.page)
+        self.browser.loadFinished.connect(self.on_load_finished)
+        self.browser.loadStarted.connect(self._on_load_started)
+        self.browser.urlChanged.connect(self._on_url_changed)
+
+        # Панель загрузок — полностью обновлённая
+        self.download_panel = QWidget()
+        self.download_panel.setFixedHeight(62)
+        self.download_panel.setStyleSheet(f"""
+            QWidget {{
+                background-color: {Colors.BG_DARKER};
+                border-top: 1px solid {Colors.BORDER};
+            }}
+            QLabel {{
+                border: none;
+                background: transparent;
+            }}
+        """)
+
+        dl_layout = QVBoxLayout(self.download_panel)
+        dl_layout.setContentsMargins(20, 8, 20, 8)
+        dl_layout.setSpacing(6)
+
+        top_row = QHBoxLayout()
+        self.dl_label = QLabel("📥 Скачивание...")
+        self.dl_label.setStyleSheet(f"color: {Colors.TEXT_PRIMARY}; font-size: 12px; font-weight: 600;")
+
+        self.dl_stats = QLabel("0%")
+        self.dl_stats.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-size: 11px; font-weight: 400;")
+
+        top_row.addWidget(self.dl_label)
+        top_row.addStretch()
+        top_row.addWidget(self.dl_stats)
+        dl_layout.addLayout(top_row)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.setContentsMargins(0, 0, 0, 0)
+        bottom_row.setSpacing(10)
+
+        self.dl_progress = QProgressBar()
+        self.dl_progress.setFixedHeight(6)
+        self.dl_progress.setTextVisible(False)
+        self.dl_progress.setStyleSheet(f"""
+            QProgressBar {{
+                border: none;
+                border-radius: 3px;
+                background-color: {Colors.BG_SECONDARY};
+            }}
+            QProgressBar::chunk {{
+                background-color: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {Colors.ACCENT_GRADIENT_START},
+                    stop:1 {Colors.ACCENT_GRADIENT_END}
+                );
+                border-radius: 3px;
+            }}
+        """)
+
+        self.btn_cancel_dl = QPushButton("✕")
+        self.btn_cancel_dl.setFixedSize(22, 22)
+        self.btn_cancel_dl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_cancel_dl.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {Colors.TEXT_MUTED};
+                border-radius: 11px;
+                font-weight: bold;
+                font-size: 11px;
+                border: 1px solid {Colors.BORDER};
+            }}
+            QPushButton:hover {{
+                background-color: {Colors.DANGER};
+                color: white;
+                border-color: {Colors.DANGER};
+            }}
+        """)
+        self.btn_cancel_dl.clicked.connect(self.cancel_download)
+
+        bottom_row.addWidget(self.dl_progress)
+        bottom_row.addWidget(self.btn_cancel_dl)
+        dl_layout.addLayout(bottom_row)
+
+        self.download_panel.hide()
+
+        # Индикатор загрузки страницы
+        self.loading_bar = QProgressBar()
+        self.loading_bar.setFixedHeight(2)
+        self.loading_bar.setTextVisible(False)
+        self.loading_bar.setMaximum(0)  # Indefinite
+        self.loading_bar.setStyleSheet(f"""
+            QProgressBar {{
+                border: none;
+                background-color: transparent;
+            }}
+            QProgressBar::chunk {{
+                background-color: {Colors.ACCENT};
+            }}
+        """)
+        self.loading_bar.hide()
+
+        self.layout.addWidget(self.loading_bar)
+        self.layout.addWidget(self.browser)
+        self.layout.addWidget(self.download_panel)
+
+        self.apply_all_settings()
+        self.browser.setUrl(QUrl("https://web.max.ru/login"))
+
+    def _settings(self):
+        for obj in (self.page, self.profile, self.browser):
+            try:
+                return obj.settings()
+            except Exception:
+                pass
+        return None
+
+    def _on_load_started(self):
+        self.loading_bar.show()
+
+    def _on_url_changed(self, url):
+        self.url_changed.emit(url.toString())
+
+    def on_load_finished(self, ok: bool):
+        self.loading_bar.hide()
+        self._is_connected = ok
+        self.connection_changed.emit(ok)
+
+        if not ok:
+            self.browser.setHtml(OFFLINE_HTML, self.browser.url())
+
+    def handle_download(self, download_item):
+        self.active_downloads.append(download_item)
+        self.current_download = download_item
+
+        file_name = download_item.downloadFileName() or "download"
+        mime_type = download_item.mimeType()
+
+        if "." not in file_name:
+            ext = mimetypes.guess_extension(mime_type)
+            if not ext and mime_type and "webp" in mime_type:
+                ext = ".webp"
+            if ext:
+                file_name += ext
+
+        downloads_dir = get_app_dir() / "Downloads"
+        downloads_dir.mkdir(parents=True, exist_ok=True)
+
+        target_path = unique_path(downloads_dir, file_name)
+
+        download_item.setDownloadDirectory(str(downloads_dir))
+        download_item.setDownloadFileName(target_path.name)
+
+        download_item.receivedBytesChanged.connect(
+            lambda: self.update_download_progress(download_item)
+        )
+        download_item.isFinishedChanged.connect(
+            lambda: self.on_download_finished(download_item, str(target_path))
+        )
+
+        display_name = target_path.name if len(target_path.name) < 40 else target_path.name[:37] + "…"
+        self.dl_label.setText(f"📥 {display_name}")
+        self.dl_stats.setText("Подключение…")
+        self.dl_progress.setMaximum(100)
+        self.dl_progress.setValue(0)
+
+        self.download_panel.show()
+        download_item.accept()
+
+    def cancel_download(self):
+        if self.current_download:
+            try:
+                self.current_download.cancel()
+            except Exception:
+                pass
+
+        if not self.active_downloads:
+            self.download_panel.hide()
+
+    def update_download_progress(self, download_item):
+        try:
+            bytes_received = download_item.receivedBytes()
+            bytes_total = download_item.totalBytes()
+            mb_received = bytes_received / (1024 * 1024)
+
+            if bytes_total > 0:
+                mb_total = bytes_total / (1024 * 1024)
+                percent = int((bytes_received / bytes_total) * 100)
+
+                self.dl_progress.setMaximum(bytes_total)
+                self.dl_progress.setValue(bytes_received)
+                self.dl_stats.setText(f"{percent}%  ({mb_received:.1f} / {mb_total:.1f} МБ)")
+            else:
+                self.dl_progress.setMaximum(0)
+                self.dl_progress.setValue(0)
+                self.dl_stats.setText(f"Скачано: {mb_received:.1f} МБ")
+        except Exception:
+            pass
+
+    def on_download_finished(self, download_item, full_path: str):
+        if download_item in self.active_downloads:
+            self.active_downloads.remove(download_item)
+
+        if not self.active_downloads:
+            self.download_panel.hide()
+
+        completed = False
+
+        try:
+            if QWebEngineDownloadRequest is not None:
+                completed = download_item.state() == QWebEngineDownloadRequest.DownloadState.DownloadCompleted
+            else:
+                completed = download_item.state() == download_item.DownloadState.DownloadCompleted
+        except Exception:
+            try:
+                completed = bool(download_item.isFinished())
+            except Exception:
+                completed = False
+
+        if completed:
+            main_win = self.window()
+            if main_win and hasattr(main_win, "tray_icon"):
+                main_win.tray_icon.showMessage(
+                    "Загрузка завершена",
+                    f"Файл сохранён: {os.path.basename(full_path)}",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    3000
+                )
+            # Toast внутри окна
+            if main_win and hasattr(main_win, "show_toast"):
+                main_win.show_toast(
+                    f"Файл сохранён: {os.path.basename(full_path)}",
+                    icon="✅",
+                    toast_type="success"
+                )
+
+    def apply_all_settings(self):
+        apply_qt_proxy(self.config.get("proxy", {}))
+
+        settings = self._settings()
+        safe_set_web_setting(settings, "WebRTCPublicInterfacesOnly", bool(self.config.get("webrtc_leak", False)))
+        safe_set_web_setting(settings, "JavascriptCanOpenWindows", True)
+        safe_set_web_setting(settings, "JavascriptEnabled", True)
+        safe_set_web_setting(settings, "LocalStorageEnabled", True)
+
+        try:
+            self.page.setAudioMuted(bool(self.config.get("mute_audio", False)))
+        except Exception:
+            pass
+
+        try:
+            zoom_text = str(self.config.get("zoom", "100%")).replace("%", "").strip()
+            zoom_val = float(zoom_text) / 100.0
+            self.browser.setZoomFactor(zoom_val)
+            self.zoom_changed.emit(zoom_val)
+        except Exception:
+            self.browser.setZoomFactor(1.0)
+
+        mask = MASKS_DB.get(self.config.get("mask", "Windows 11 (Chrome)"))
+        if not mask:
+            mask = MASKS_DB["Windows 11 (Chrome)"]
+
+        try:
+            self.profile.setHttpUserAgent(mask.ua)
+            self.profile.setHttpAcceptLanguage("ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
+        except Exception:
+            pass
+
+        css_inject = THEMES.get(self.config.get("theme", "Telegram Dark"), "")
+
+        if self.config.get("hide_scrollbars", False):
+            css_inject += " ::-webkit-scrollbar { display: none !important; }"
+
+        if self.config.get("adblock", False):
+            css_inject += """
+                .ads,
+                .advertisement,
+                [id*='yandex_rtb'],
+                .banner {
+                    display: none !important;
+                }
+            """
+
+        canvas_noise = "true" if self.config.get("canvas_noise", True) else "false"
+        audio_noise = "true" if self.config.get("audio_noise", True) else "false"
+        css_js = json.dumps(css_inject)
+
+        js_code = f"""
+        (function() {{
+            const config = {json.dumps(mask.to_dict())};
+
+            try {{
+                Object.defineProperty(navigator, 'userAgent', {{ get: () => config.ua }});
+                Object.defineProperty(navigator, 'platform', {{ get: () => config.platform }});
+                Object.defineProperty(navigator, 'vendor', {{ get: () => config.vendor }});
+                Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => 8 }});
+                Object.defineProperty(navigator, 'deviceMemory', {{ get: () => 8 }});
+                Object.defineProperty(navigator, 'languages', {{ get: () => ['ru-RU', 'ru', 'en-US', 'en'] }});
+                Object.defineProperty(navigator, 'webdriver', {{ get: () => false }});
+            }} catch (e) {{}}
+
+            if ({canvas_noise}) {{
+                try {{
+                    const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+                    HTMLCanvasElement.prototype.toDataURL = function(type) {{
+                        try {{
+                            const context = this.getContext('2d');
+                            if (context && type && type.includes('image/png')) {{
+                                const previousFillStyle = context.fillStyle;
+                                context.fillStyle = 'rgba(255,255,255,0.01)';
+                                context.fillRect(0, 0, 1, 1);
+                                context.fillStyle = previousFillStyle;
+                            }}
+                        }} catch (e) {{}}
+                        return originalToDataURL.apply(this, arguments);
+                    }};
+                }} catch (e) {{}}
+            }}
+
+            if ({audio_noise}) {{
+                try {{
+                    const originalGetChannelData = AudioBuffer.prototype.getChannelData;
+                    AudioBuffer.prototype.getChannelData = function(channel) {{
+                        const data = originalGetChannelData.call(this, channel);
+                        try {{
+                            for (let i = 0; i < 64; i++) {{
+                                const idx = Math.floor(Math.random() * data.length);
+                                data[idx] += (Math.random() * 0.0001 - 0.00005);
+                            }}
+                        }} catch (e) {{}}
+                        return data;
+                    }};
+                }} catch (e) {{}}
+            }}
+
+            window.addEventListener('DOMContentLoaded', () => {{
+                try {{
+                    const style = document.createElement('style');
+                    style.textContent = {css_js};
+                    document.head.appendChild(style);
+                }} catch (e) {{}}
+            }});
+        }})();
+        """
+
+        try:
+            self.profile.scripts().clear()
+
+            script = QWebEngineScript()
+            script.setSourceCode(js_code)
+            script.setName("stealth_and_style")
+            script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+
+            try:
+                script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+            except Exception:
+                pass
+
+            self.profile.scripts().insert(script)
+        except Exception:
+            pass
+
+
+# ─────────────────────────────────────────────
+# Диалог настроек — полностью переработанный
+# ─────────────────────────────────────────────
+class SettingsDialog(QDialog):
+    def __init__(self, main_app):
+        super().__init__(main_app)
+        self.main_app = main_app
+        self.setWindowTitle(f"Настройки — {APP_NAME}")
+        self.setMinimumSize(760, 700)
+        self.resize(760, 700)
+
+        icon_path = resource_path("max.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {Colors.BG_PRIMARY};
+                font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            }}
+
+            QTabWidget::pane {{
+                border: none;
+                background-color: {Colors.BG_PRIMARY};
+            }}
+
+            QTabBar {{
+                background: {Colors.BG_DARKEST};
+            }}
+
+            QTabBar::tab {{
+                background: transparent;
+                color: {Colors.TEXT_MUTED};
+                padding: 14px 20px;
+                font-size: 13px;
+                font-weight: 600;
+                border: none;
+                border-bottom: 2px solid transparent;
+                min-width: 80px;
+            }}
+
+            QTabBar::tab:hover {{
+                color: {Colors.TEXT_SECONDARY};
+                background-color: {Colors.BG_DARK};
+            }}
+
+            QTabBar::tab:selected {{
+                color: {Colors.TEXT_PRIMARY};
+                border-bottom: 2px solid {Colors.ACCENT};
+            }}
+
+            QLabel {{
+                color: {Colors.TEXT_PRIMARY};
+                font-size: 13px;
+                font-weight: 500;
+            }}
+
+            QComboBox,
+            QLineEdit {{
+                background-color: {Colors.BG_SECONDARY};
+                color: {Colors.TEXT_PRIMARY};
+                font-size: 13px;
+                padding: 10px 14px;
+                border-radius: 8px;
+                border: 1px solid {Colors.BORDER};
+                selection-background-color: {Colors.ACCENT};
+            }}
+
+            QComboBox:hover,
+            QLineEdit:hover {{
+                border-color: {Colors.BORDER_HOVER};
+            }}
+
+            QComboBox:focus,
+            QLineEdit:focus {{
+                border-color: {Colors.ACCENT};
+            }}
+
+            QComboBox::drop-down {{
+                border: none;
+                width: 30px;
+            }}
+
+            QComboBox::down-arrow {{
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid {Colors.TEXT_MUTED};
+                margin-right: 10px;
+            }}
+
+            QComboBox QAbstractItemView {{
+                background-color: {Colors.BG_ELEVATED};
+                color: {Colors.TEXT_PRIMARY};
+                border: 1px solid {Colors.BORDER};
+                selection-background-color: {Colors.ACCENT};
+                outline: none;
+                border-radius: 8px;
+                padding: 4px;
+            }}
+
+            QCheckBox {{
+                color: {Colors.TEXT_PRIMARY};
+                font-size: 13px;
+                spacing: 10px;
+            }}
+
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                border: 2px solid {Colors.TEXT_MUTED};
+                background: transparent;
+            }}
+
+            QCheckBox::indicator:hover {{
+                border: 2px solid {Colors.TEXT_SECONDARY};
+            }}
+
+            QCheckBox::indicator:checked {{
+                background-color: {Colors.ACCENT};
+                border: 2px solid {Colors.ACCENT};
+            }}
+
+            QPushButton {{
+                background-color: {Colors.ACCENT};
+                color: white;
+                padding: 10px 20px;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: 600;
+                border: none;
+            }}
+
+            QPushButton:hover {{
+                background-color: {Colors.ACCENT_HOVER};
+            }}
+
+            QPushButton:pressed {{
+                background-color: {Colors.ACCENT_ACTIVE};
+            }}
+
+            QPushButton#danger {{
+                background-color: transparent;
+                color: {Colors.DANGER};
+                border: 1px solid {Colors.DANGER};
+            }}
+
+            QPushButton#danger:hover {{
+                background-color: {Colors.DANGER};
+                color: white;
+            }}
+
+            QPushButton#success {{
+                background-color: transparent;
+                color: {Colors.SUCCESS};
+                border: 1px solid {Colors.SUCCESS};
+            }}
+
+            QPushButton#success:hover {{
+                background-color: {Colors.SUCCESS};
+                color: white;
+            }}
+
+            QPushButton#ghost {{
+                background-color: transparent;
+                color: {Colors.TEXT_SECONDARY};
+                border: 1px solid {Colors.BORDER};
+            }}
+
+            QPushButton#ghost:hover {{
+                background-color: {Colors.BG_HOVER};
+                color: {Colors.TEXT_PRIMARY};
+                border-color: {Colors.BORDER_HOVER};
+            }}
+
+            {GLOBAL_TOOLTIP_STYLE}
+        """)
+
+        active_browser = self.main_app.get_active_browser()
+        config = active_browser.config if active_browser else {}
+        global_config = self.main_app.app_data.get("global", {})
+        proxy_cfg = global_config.get("proxy", config.get("proxy", DEFAULT_PROXY))
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Заголовок настроек
+        header = QWidget()
+        header.setFixedHeight(56)
+        header.setStyleSheet(f"background-color: {Colors.BG_DARKEST};")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(24, 0, 24, 0)
+
+        header_title = QLabel("⚙  Настройки")
+        header_title.setStyleSheet(f"""
+            color: {Colors.TEXT_PRIMARY};
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+        """)
+        header_layout.addWidget(header_title)
+        header_layout.addStretch()
+
+        header_version = QLabel(f"v{APP_VERSION}")
+        header_version.setStyleSheet(f"""
+            color: {Colors.TEXT_MUTED};
+            font-size: 12px;
+            font-weight: 400;
+        """)
+        header_layout.addWidget(header_version)
+
+        layout.addWidget(header)
+
+        tabs = QTabWidget()
+
+        def create_padded_form():
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setStyleSheet(f"""
+                QScrollArea {{
+                    border: none;
+                    background: transparent;
+                }}
+                QScrollArea > QWidget > QWidget {{
+                    background: transparent;
+                }}
+            """)
+            widget = QWidget()
+            form = QFormLayout(widget)
+            form.setContentsMargins(32, 28, 32, 28)
+            form.setVerticalSpacing(18)
+            form.setHorizontalSpacing(24)
+            scroll.setWidget(widget)
+            return scroll, widget, form
+
+        tab_prof_scroll, tab_prof, form_prof = create_padded_form()
+        tab_priv_scroll, tab_priv, form_priv = create_padded_form()
+        tab_proxy_scroll, tab_proxy, form_proxy = create_padded_form()
+        tab_look_scroll, tab_look, form_look = create_padded_form()
+        tab_sys_scroll, tab_sys, form_sys = create_padded_form()
+
+        tab_support = QWidget()
+        form_support = QVBoxLayout(tab_support)
+        form_support.setContentsMargins(32, 28, 32, 28)
+        form_support.setSpacing(16)
+
+        # ── ПРОФИЛЬ ──
+        self.profile_combo = QComboBox()
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.addItems(self.main_app.app_data["profiles"].keys())
+        if self.main_app.app_data["profiles"]:
+            self.profile_combo.setCurrentIndex(max(0, self.main_app.browser_stack.currentIndex()))
+        self.profile_combo.blockSignals(False)
+        self.profile_combo.currentIndexChanged.connect(self.main_app.switch_profile)
+        form_prof.addRow("Текущий аккаунт:", self.profile_combo)
+
+        btn_add = QPushButton("＋  Добавить профиль")
+        btn_add.setObjectName("success")
+        btn_add.clicked.connect(self.add_profile_dialog)
+        form_prof.addRow("Мультиаккаунт:", btn_add)
+
+        btn_delete = QPushButton("🗑  Удалить профиль")
+        btn_delete.setObjectName("danger")
+        btn_delete.clicked.connect(self.delete_profile_dialog)
+        form_prof.addRow("", btn_delete)
+
+        # ── ПРИВАТНОСТЬ ──
+        self._add_section_header(form_priv, "🎭 Маскировка устройства")
+
+        self.mask_combo = QComboBox()
+        self.mask_combo.addItems(MASKS_DB.keys())
+        self.mask_combo.setCurrentText(config.get("mask", "Windows 11 (Chrome)"))
+        form_priv.addRow("Подмена ОС:", self.mask_combo)
+
+        self._add_section_header(form_priv, "🛡 Защита")
+
+        self.cb_webrtc = QCheckBox("Запретить утечку IP (WebRTC Strict)")
+        self.cb_webrtc.setChecked(config.get("webrtc_leak", False))
+        form_priv.addRow("Сеть:", self.cb_webrtc)
+
+        self.cb_canvas = QCheckBox("Шум на Canvas (Анти-трекинг)")
+        self.cb_canvas.setChecked(config.get("canvas_noise", True))
+        form_priv.addRow("Графика:", self.cb_canvas)
+
+        self.cb_audio = QCheckBox("Шум AudioContext (Анти-трекинг)")
+        self.cb_audio.setChecked(config.get("audio_noise", True))
+        form_priv.addRow("Звук:", self.cb_audio)
+
+        self.cb_adblock = QCheckBox("Встроенный AdBlock")
+        self.cb_adblock.setChecked(config.get("adblock", False))
+        form_priv.addRow("Реклама:", self.cb_adblock)
+
+        # ── ПРОКСИ ──
+        self.proxy_type = QComboBox()
+        self.proxy_type.addItems(["Нет", "HTTP", "SOCKS5"])
+        self.proxy_type.setCurrentText(proxy_cfg.get("type", "Нет"))
+
+        self.proxy_host = QLineEdit()
+        self.proxy_host.setText(proxy_cfg.get("host", ""))
+        self.proxy_host.setPlaceholderText("IP / Host")
+
+        self.proxy_port = QLineEdit()
+        self.proxy_port.setText(str(proxy_cfg.get("port", "")))
+        self.proxy_port.setPlaceholderText("Port")
+
+        proxy_note = QLabel("Прокси сохраняется глобально. Для QtWebEngine может потребоваться перезапуск.")
+        proxy_note.setWordWrap(True)
+        proxy_note.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-weight: 400; font-size: 12px;")
+
+        form_proxy.addRow("Тип прокси:", self.proxy_type)
+        form_proxy.addRow("Хост / IP:", self.proxy_host)
+        form_proxy.addRow("Порт:", self.proxy_port)
+        form_proxy.addRow("", proxy_note)
+
+        # ── ВИД ──
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(THEMES.keys())
+        self.theme_combo.setCurrentText(config.get("theme", "Telegram Dark"))
+        form_look.addRow("Тема MAX:", self.theme_combo)
+
+        self.zoom_combo = QComboBox()
+        self.zoom_combo.addItems(["80%", "90%", "100%", "110%", "125%", "150%"])
+        self.zoom_combo.setCurrentText(config.get("zoom", "100%"))
+        form_look.addRow("Масштаб:", self.zoom_combo)
+
+        self.cb_scroll = QCheckBox("Скрыть полосы прокрутки")
+        self.cb_scroll.setChecked(config.get("hide_scrollbars", False))
+        form_look.addRow("Скроллбары:", self.cb_scroll)
+
+        # ── СИСТЕМА ──
+        self.cb_mute = QCheckBox("Отключить звуки вкладки")
+        self.cb_mute.setChecked(config.get("mute_audio", False))
+        form_sys.addRow("Звук:", self.cb_mute)
+
+        self.cb_tray = QCheckBox("Сворачивать в трей при закрытии")
+        self.cb_tray.setChecked(global_config.get("close_to_tray", True))
+        form_sys.addRow("Фон:", self.cb_tray)
+
+        self.cb_save_window = QCheckBox("Запоминать размер и положение окна")
+        self.cb_save_window.setChecked(global_config.get("save_window_state", True))
+        form_sys.addRow("Окно:", self.cb_save_window)
+
+        self._add_section_header(form_sys, "🗑 Данные")
+
+        btn_clear_cache = QPushButton("Очистить кэш и историю")
+        btn_clear_cache.setObjectName("danger")
+        btn_clear_cache.clicked.connect(self.clear_cache)
+        form_sys.addRow("Кэш:", btn_clear_cache)
+
+        btn_open_downloads = QPushButton("📁  Открыть папку загрузок")
+        btn_open_downloads.setObjectName("ghost")
+        btn_open_downloads.clicked.connect(self.open_downloads_folder)
+        form_sys.addRow("Загрузки:", btn_open_downloads)
+
+        btn_open_appdir = QPushButton("📂  Открыть папку приложения")
+        btn_open_appdir.setObjectName("ghost")
+        btn_open_appdir.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(get_app_dir()))))
+        form_sys.addRow("Каталог:", btn_open_appdir)
+
+        # ── ПОДДЕРЖКА ──
+        lbl_support = QLabel(
+            "Возникли ошибки или баги в работе клиента?\n\n"
+            "Создайте диагностический файл. Он соберёт базовую информацию о системе, "
+            "версии Python, диске и текущих настройках программы.\n\n"
+            "После создания файла откроется Telegram."
+        )
+        lbl_support.setWordWrap(True)
+        lbl_support.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-weight: 400; font-size: 13px;")
+
+        btn_report = QPushButton("🛠  Создать отчёт и открыть Telegram")
+        btn_report.setObjectName("danger")
+        btn_report.clicked.connect(self.generate_support_report)
+
+        # Информация о версии
+        about_label = QLabel(
+            f"\n{APP_NAME} v{APP_VERSION}\n"
+            f"Python {platform.python_version()}\n"
+            f"{platform.system()} {platform.release()}"
+        )
+        about_label.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 12px; font-weight: 400;")
+
+        form_support.addWidget(lbl_support)
+        form_support.addWidget(btn_report)
+        form_support.addStretch()
+        form_support.addWidget(about_label)
+
+        tabs.addTab(tab_prof_scroll, "  Профиль  ")
+        tabs.addTab(tab_priv_scroll, "  Приватность  ")
+        tabs.addTab(tab_proxy_scroll, "  Прокси  ")
+        tabs.addTab(tab_look_scroll, "  Вид  ")
+        tabs.addTab(tab_sys_scroll, "  Система  ")
+        tabs.addTab(tab_support, "  Поддержка  ")
+
+        layout.addWidget(tabs)
+
+        # Нижняя панель с кнопками
+        bottom_widget = QWidget()
+        bottom_widget.setFixedHeight(64)
+        bottom_widget.setStyleSheet(f"""
+            QWidget {{
+                background-color: {Colors.BG_DARKEST};
+                border-top: 1px solid {Colors.BORDER};
+            }}
+        """)
+        bottom_layout = QHBoxLayout(bottom_widget)
+        bottom_layout.setContentsMargins(24, 0, 24, 0)
+
+        btn_cancel = QPushButton("Отмена")
+        btn_cancel.setObjectName("ghost")
+        btn_cancel.clicked.connect(self.reject)
+        bottom_layout.addWidget(btn_cancel)
+
+        bottom_layout.addStretch()
+
+        btn_apply = QPushButton("✓  Сохранить и применить")
+        btn_apply.setMinimumWidth(200)
+        btn_apply.clicked.connect(self.save_and_apply)
+        bottom_layout.addWidget(btn_apply)
+
+        layout.addWidget(bottom_widget)
+
+    def _add_section_header(self, form, text: str):
+        label = QLabel(text)
+        label.setStyleSheet(f"""
+            color: {Colors.TEXT_MUTED};
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            padding-top: 12px;
+        """)
+        form.addRow(label)
+
+    def refresh_profile_combo(self, selected: str = None):
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+        self.profile_combo.addItems(self.main_app.app_data["profiles"].keys())
+
+        if selected and selected in self.main_app.app_data["profiles"]:
+            self.profile_combo.setCurrentText(selected)
+        else:
+            self.profile_combo.setCurrentIndex(max(0, self.main_app.browser_stack.currentIndex()))
+
+        self.profile_combo.blockSignals(False)
+
+    def add_profile_dialog(self):
+        text, ok = QInputDialog.getText(self, "Новый аккаунт", "Название профиля:")
+        if not ok:
+            return
+
+        text = text.strip()
+        if not text:
+            return
+
+        if text not in self.main_app.app_data["profiles"]:
+            self.main_app.add_profile(text)
+
+        self.refresh_profile_combo(text)
+
+    def delete_profile_dialog(self):
+        """Удаление профиля с подтверждением."""
+        names = list(self.main_app.app_data["profiles"].keys())
+        if len(names) <= 1:
+            QMessageBox.warning(self, "Удаление", "Нельзя удалить единственный профиль.")
+            return
+
+        current_name = self.profile_combo.currentText()
+        reply = QMessageBox.question(
+            self, "Удалить профиль",
+            f"Удалить профиль «{current_name}»?\n\nВсе данные профиля (cookie, кэш) будут удалены безвозвратно.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.main_app.delete_profile(current_name)
+            self.refresh_profile_combo()
+
+    def open_downloads_folder(self):
+        downloads_dir = get_app_dir() / "Downloads"
+        downloads_dir.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(downloads_dir)))
+
+    def clear_cache(self):
+        active_browser = self.main_app.get_active_browser()
+        if not active_browser:
+            QMessageBox.information(self, "Кэш", "Активный профиль не найден.")
+            return
+
+        try:
+            active_browser.profile.clearHttpCache()
+        except Exception:
+            pass
+
+        try:
+            active_browser.profile.clearAllVisitedHistory()
+        except Exception:
+            pass
+
+        QMessageBox.information(self, "Готово", "Кэш и история успешно очищены.")
+
+    def save_and_apply(self):
+        self.main_app.app_data.setdefault("global", {})["close_to_tray"] = self.cb_tray.isChecked()
+        self.main_app.app_data.setdefault("global", {})["save_window_state"] = self.cb_save_window.isChecked()
+
+        old_proxy = self.main_app.app_data.get("global", {}).get("proxy", {}).copy()
+
+        new_proxy = {
+            "type": self.proxy_type.currentText(),
+            "host": self.proxy_host.text().strip(),
+            "port": self.proxy_port.text().strip()
+        }
+
+        self.main_app.app_data.setdefault("global", {})["proxy"] = new_proxy
+        apply_qt_proxy(new_proxy)
+
+        active_browser = self.main_app.get_active_browser()
+        if active_browser:
+            active_browser.config.update({
+                "mask": self.mask_combo.currentText(),
+                "webrtc_leak": self.cb_webrtc.isChecked(),
+                "canvas_noise": self.cb_canvas.isChecked(),
+                "audio_noise": self.cb_audio.isChecked(),
+                "adblock": self.cb_adblock.isChecked(),
+                "theme": self.theme_combo.currentText(),
+                "zoom": self.zoom_combo.currentText(),
+                "hide_scrollbars": self.cb_scroll.isChecked(),
+                "mute_audio": self.cb_mute.isChecked(),
+                "proxy": new_proxy
+            })
+
+            active_browser.apply_all_settings()
+
+            try:
+                active_browser.browser.reload()
+            except Exception:
+                pass
+
+        self.main_app.save_config()
+
+        if json.dumps(old_proxy, sort_keys=True) != json.dumps(new_proxy, sort_keys=True):
+            QMessageBox.information(
+                self,
+                "Прокси",
+                "Прокси сохранён.\n\nДля полного применения в QtWebEngine может потребоваться перезапуск."
+            )
+
+        self.accept()
+
+    def get_ram_info(self):
+        try:
+            if platform.system() == "Windows":
+                kernel32 = ctypes.windll.kernel32
+                c_ulonglong = ctypes.c_ulonglong
+
+                class MEMORYSTATUSEX(ctypes.Structure):
+                    _fields_ = [
+                        ("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", c_ulonglong),
+                        ("ullAvailPhys", c_ulonglong),
+                        ("ullTotalPageFile", c_ulonglong),
+                        ("ullAvailPageFile", c_ulonglong),
+                        ("ullTotalVirtual", c_ulonglong),
+                        ("ullAvailVirtual", c_ulonglong),
+                        ("sullAvailExtendedVirtual", c_ulonglong),
+                    ]
+
+                memory_status = MEMORYSTATUSEX()
+                memory_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+                kernel32.GlobalMemoryStatusEx(ctypes.byref(memory_status))
+
+                total_ram = memory_status.ullTotalPhys / (1024 ** 3)
+                avail_ram = memory_status.ullAvailPhys / (1024 ** 3)
+
+                return f"{total_ram:.1f} ГБ (Доступно: {avail_ram:.1f} ГБ)"
+
+            return "Недоступно (не Windows)"
+        except Exception as e:
+            return f"Ошибка чтения RAM: {e}"
+
+    def generate_support_report(self):
+        report = []
+
+        report.append(f"=== {APP_NAME} v{APP_VERSION} — Diagnostic Report ===")
+        report.append(f"Дата создания: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        report.append("\n--- СИСТЕМА ---")
+        report.append(f"ОС: {platform.system()} {platform.release()} (Версия: {platform.version()})")
+        report.append(f"Платформа: {platform.platform()}")
+        report.append(f"Архитектура: {platform.machine()}")
+
+        report.append("\n--- ЖЕЛЕЗО ---")
+        report.append(f"Процессор: {platform.processor()}")
+        report.append(f"Количество ядер: {os.cpu_count()}")
+        report.append(f"Оперативная память: {self.get_ram_info()}")
+
+        try:
+            screen = QApplication.primaryScreen().size()
+            report.append(f"Разрешение экрана: {screen.width()}x{screen.height()}")
+        except Exception:
+            report.append("Разрешение экрана: недоступно")
+
+        report.append("\n--- ПРИЛОЖЕНИЕ И ДИСК ---")
+
+        app_dir = get_app_dir()
+        is_portable = getattr(sys, "frozen", False)
+
+        try:
+            total, used, free = shutil.disk_usage(app_dir)
+            report.append(f"Диск (где лежит программа): Свободно {free // (1024 ** 3)} ГБ из {total // (1024 ** 3)} ГБ")
+        except Exception:
+            report.append("Диск: Ошибка доступа")
+
+        report.append(f"Тип запуска: {'Compiled (.exe)' if is_portable else 'Python Script'}")
+        report.append(f"Рабочая папка: {app_dir}")
+        report.append(f"Python: {platform.python_version()}")
+
+        active_browser = self.main_app.get_active_browser()
+        if active_browser:
+            try:
+                report.append(f"UserAgent профиля: {active_browser.profile.httpUserAgent()}")
+            except Exception:
+                pass
+
+        report.append("\n=== APP CONFIGURATION (JSON) ===")
+        safe_config = json.dumps(self.main_app.app_data, indent=4, ensure_ascii=False)
+        report.append(safe_config)
+
+        try:
+            desktop = Path.home() / "Desktop"
+            if not desktop.exists():
+                desktop = Path.home()
+
+            report_path = desktop / "MAX_Support_Report.txt"
+            report_path.write_text("\n".join(report), encoding="utf-8")
+
+            QMessageBox.information(
+                self,
+                "Отчёт создан",
+                f"Файл диагностики сохранён:\n\n{report_path}\n\nСейчас откроется Telegram."
+            )
+
+            QDesktopServices.openUrl(QUrl("https://t.me/devjijlk"))
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить отчёт:\n{e}")
+
+
+# ─────────────────────────────────────────────
+# Оверлей горячих клавиш
+# ─────────────────────────────────────────────
+class ShortcutsOverlay(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Горячие клавиши")
+        self.setFixedSize(420, 380)
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {Colors.BG_PRIMARY};
+                border: 1px solid {Colors.BORDER};
+                border-radius: 12px;
+            }}
+            QLabel {{
+                color: {Colors.TEXT_PRIMARY};
+                font-size: 13px;
+            }}
+        """)
+
+        icon_path = resource_path("max.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(8)
+
+        title = QLabel("⌨  Горячие клавиши")
+        title.setStyleSheet(f"color: {Colors.TEXT_PRIMARY}; font-size: 16px; font-weight: 700;")
+        layout.addWidget(title)
+        layout.addSpacing(12)
+
+        shortcuts = [
+            ("Ctrl + T", "Новый профиль"),
+            ("Ctrl + W", "Закрыть окно"),
+            ("Ctrl + R / F5", "Обновить страницу"),
+            ("Ctrl + Shift + S", "Настройки"),
+            ("Ctrl + колесо", "Масштаб страницы"),
+            ("Alt + ←", "Назад"),
+            ("Alt + →", "Вперёд"),
+            ("Ctrl + 1-9", "Переключение профилей"),
+            ("F1", "Горячие клавиши"),
+        ]
+
+        for key, desc in shortcuts:
+            row = QHBoxLayout()
+            key_label = QLabel(key)
+            key_label.setFixedWidth(160)
+            key_label.setStyleSheet(f"""
+                color: {Colors.ACCENT};
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-weight: 600;
+                font-size: 12px;
+                background-color: {Colors.BG_SECONDARY};
+                padding: 4px 10px;
+                border-radius: 4px;
+            """)
+            desc_label = QLabel(desc)
+            desc_label.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-size: 13px;")
+
+            row.addWidget(key_label)
+            row.addWidget(desc_label)
+            row.addStretch()
+            layout.addLayout(row)
+
+        layout.addStretch()
+
+
+# ─────────────────────────────────────────────
+# Главное окно приложения
+# ─────────────────────────────────────────────
+class MaxApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(f"{APP_NAME}")
+        self.resize(1340, 880)
+        self.setMinimumSize(800, 500)
+
+        icon_path = resource_path("max.ico")
+        if os.path.exists(icon_path):
+            self.app_icon = QIcon(icon_path)
+            self.setWindowIcon(self.app_icon)
+        else:
+            self.app_icon = None
+
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background-color: {Colors.BG_DARKEST};
+            }}
+            {GLOBAL_TOOLTIP_STYLE}
+        """)
+
+        self.profile_browsers = {}
+        self.browser_stack = QStackedWidget()
+        self.browser_stack.setStyleSheet(f"background-color: {Colors.BG_PRIMARY};")
+
+        self.load_config()
+
+        self._setup_tray()
+        self._setup_ui()
+        self._setup_shortcuts()
+
+        if not self.app_data["profiles"]:
+            self.add_profile("Основной аккаунт")
+        else:
+            for name in list(self.app_data["profiles"].keys()):
+                self.add_profile(name, is_loading=True)
+
+        if self.browser_stack.count() > 0:
+            self.switch_profile(0)
+
+        # Восстанавливаем состояние окна
+        self._restore_window_state()
+
+    def _default_profile(self):
+        return {
+            "mask": "Windows 11 (Chrome)",
+            "theme": "Telegram Dark",
+            "zoom": "100%",
+            "webrtc_leak": False,
+            "canvas_noise": True,
+            "audio_noise": True,
+            "adblock": False,
+            "mute_audio": False,
+            "hide_scrollbars": False,
+            "proxy": self.app_data.get("global", {}).get("proxy", DEFAULT_PROXY).copy()
+        }
+
+    def load_config(self):
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    self.app_data = json.load(f)
+                self._migrate_config()
+            except Exception:
+                self._create_default_config()
+        else:
+            self._create_default_config()
+
+    def _create_default_config(self):
+        self.app_data = {
+            "global": {
+                "close_to_tray": True,
+                "save_window_state": True,
+                "proxy": DEFAULT_PROXY.copy()
+            },
+            "profiles": {}
+        }
+
+    def _migrate_config(self):
+        if "global" not in self.app_data:
+            self.app_data["global"] = {}
+
+        if "close_to_tray" not in self.app_data["global"]:
+            self.app_data["global"]["close_to_tray"] = True
+
+        if "save_window_state" not in self.app_data["global"]:
+            self.app_data["global"]["save_window_state"] = True
+
+        if "proxy" not in self.app_data["global"]:
+            first_profile = next(iter(self.app_data.get("profiles", {}).values()), None)
+            if first_profile and isinstance(first_profile.get("proxy"), dict):
+                self.app_data["global"]["proxy"] = first_profile["proxy"].copy()
+            else:
+                self.app_data["global"]["proxy"] = DEFAULT_PROXY.copy()
+
+        if "profiles" not in self.app_data:
+            self.app_data["profiles"] = {}
+
+        old_theme_map = {
+            "Стандартная": "MAX Original",
+            "Темная (Telegram)": "Telegram Dark",
+            "AMOLED Черная": "AMOLED Black"
+        }
+
+        defaults = self._default_profile()
+
+        for profile in self.app_data["profiles"].values():
+            if profile.get("theme") in old_theme_map:
+                profile["theme"] = old_theme_map[profile["theme"]]
+
+            for key, value in defaults.items():
+                if key not in profile:
+                    profile[key] = value.copy() if isinstance(value, dict) else value
+
+    def save_config(self):
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.app_data, f, ensure_ascii=False, indent=4)
+        except Exception:
+            pass
+
+    def _save_window_state(self):
+        if not self.app_data.get("global", {}).get("save_window_state", True):
+            return
+
+        try:
+            state = {
+                "x": self.x(),
+                "y": self.y(),
+                "width": self.width(),
+                "height": self.height(),
+                "maximized": self.isMaximized()
+            }
+            with open(WINDOW_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+        except Exception:
+            pass
+
+    def _restore_window_state(self):
+        if not self.app_data.get("global", {}).get("save_window_state", True):
+            return
+
+        try:
+            if WINDOW_STATE_FILE.exists():
+                with open(WINDOW_STATE_FILE, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+
+                if state.get("maximized"):
+                    self.showMaximized()
+                else:
+                    x = state.get("x", 100)
+                    y = state.get("y", 100)
+                    w = state.get("width", 1340)
+                    h = state.get("height", 880)
+                    self.setGeometry(x, y, w, h)
+        except Exception:
+            pass
+
+    def _setup_ui(self):
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        self.top_bar = TopBar(self)
+        main_layout.addWidget(self.top_bar)
+
+        # Тонкая линия-разделитель под заголовком
+        separator = QFrame()
+        separator.setFixedHeight(1)
+        separator.setStyleSheet(f"background-color: {Colors.BORDER};")
+        main_layout.addWidget(separator)
+
+        content_area = QWidget()
+        content_layout = QHBoxLayout(content_area)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        self.sidebar = Sidebar(self)
+        self.sidebar.profile_clicked.connect(self.switch_profile)
+        self.sidebar.settings_clicked.connect(self.open_settings)
+        self.sidebar.add_profile_clicked.connect(self.add_new_profile)
+
+        # Тонкая линия-разделитель между сайдбаром и контентом
+        sidebar_sep = QFrame()
+        sidebar_sep.setFixedWidth(1)
+        sidebar_sep.setStyleSheet(f"background-color: {Colors.BORDER};")
+
+        content_layout.addWidget(self.sidebar)
+        content_layout.addWidget(sidebar_sep)
+        content_layout.addWidget(self.browser_stack)
+
+        main_layout.addWidget(content_area)
+
+        # Статус-бар
+        self.status_bar = StatusBar(self)
+        main_layout.addWidget(self.status_bar)
+
+        self._refresh_sidebar()
+
+    def _setup_tray(self):
+        self.tray_icon = QSystemTrayIcon(self)
+
+        if self.app_icon:
+            self.tray_icon.setIcon(self.app_icon)
+
+        tray_menu = QMenu()
+        tray_menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {Colors.BG_ELEVATED};
+                color: {Colors.TEXT_PRIMARY};
+                border: 1px solid {Colors.BORDER};
+                border-radius: 8px;
+                padding: 4px;
+            }}
+            QMenu::item {{
+                padding: 8px 24px;
+                border-radius: 4px;
+            }}
+            QMenu::item:selected {{
+                background-color: {Colors.ACCENT};
+            }}
+        """)
+
+        show_action = QAction("Показать", self)
+        show_action.triggered.connect(self._show_from_tray)
+
+        settings_action = QAction("Настройки", self)
+        settings_action.triggered.connect(lambda: (self._show_from_tray(), self.open_settings()))
+
+        tray_menu.addAction(show_action)
+        tray_menu.addAction(settings_action)
+        tray_menu.addSeparator()
+
+        quit_action = QAction("Выход", self)
+        quit_action.triggered.connect(QApplication.instance().quit)
+        tray_menu.addAction(quit_action)
+
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self.tray_activated)
+        self.tray_icon.show()
+
+    def _show_from_tray(self):
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def _setup_shortcuts(self):
+        QShortcut(QKeySequence("Ctrl+T"), self, self.add_new_profile)
+        QShortcut(QKeySequence("Ctrl+W"), self, self.close)
+        QShortcut(QKeySequence("Alt+Left"), self, self.go_back)
+        QShortcut(QKeySequence("Alt+Right"), self, self.go_forward)
+        QShortcut(QKeySequence("Ctrl+R"), self, self.reload_page)
+        QShortcut(QKeySequence("F5"), self, self.reload_page)
+        QShortcut(QKeySequence("Ctrl+Shift+S"), self, self.open_settings)
+        QShortcut(QKeySequence("F1"), self, self._show_shortcuts)
+
+        # Ctrl+1..9 для быстрого переключения профилей
+        for i in range(1, 10):
+            QShortcut(
+                QKeySequence(f"Ctrl+{i}"), self,
+                lambda idx=i-1: self.switch_profile(idx)
+            )
+
+    def _show_shortcuts(self):
+        ShortcutsOverlay(self).exec()
+
+    def _refresh_sidebar(self):
+        names = list(self.profile_browsers.keys())
+        self.sidebar.rebuild(names, self.browser_stack.currentIndex())
+        self._update_top_profile_label()
+
+    def _update_top_profile_label(self):
+        index = self.browser_stack.currentIndex()
+        names = list(self.profile_browsers.keys())
+
+        if 0 <= index < len(names):
+            name = names[index]
+            self.top_bar.profile_label.setText(name)
+            self.status_bar.update_profile(name)
+        else:
+            self.top_bar.profile_label.setText("")
+            self.status_bar.update_profile("")
+
+    def tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._show_from_tray()
+
+    def closeEvent(self, event):
+        self._save_window_state()
+
+        if self.app_data.get("global", {}).get("close_to_tray", True):
+            event.ignore()
+            self.hide()
+
+            try:
+                self.tray_icon.showMessage(
+                    APP_NAME,
+                    "Приложение свёрнуто в фоновый режим.",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    2000
+                )
+            except Exception:
+                pass
+        else:
+            event.accept()
+
+    def add_profile(self, name: str, is_loading=False):
+        name = name.strip()
+        if not name:
+            return
+
+        if name in self.profile_browsers:
+            index = list(self.profile_browsers.keys()).index(name)
+            self.switch_profile(index)
+            return
+
+        if name not in self.app_data["profiles"]:
+            self.app_data["profiles"][name] = self._default_profile()
+            if not is_loading:
+                self.save_config()
+        else:
+            defaults = self._default_profile()
+            for key, value in defaults.items():
+                if key not in self.app_data["profiles"][name]:
+                    self.app_data["profiles"][name][key] = value.copy() if isinstance(value, dict) else value
+
+        browser_widget = ProfileBrowser(name, self.app_data["profiles"][name])
+
+        # Подключаем сигналы для обновления статус-бара
+        browser_widget.url_changed.connect(self.status_bar.update_url)
+        browser_widget.zoom_changed.connect(self.status_bar.update_zoom)
+        browser_widget.connection_changed.connect(self.top_bar.set_connection_status)
+
+        self.profile_browsers[name] = browser_widget
+
+        self.browser_stack.addWidget(browser_widget)
+        self.browser_stack.setCurrentWidget(browser_widget)
+
+        self._refresh_sidebar()
+
+    def delete_profile(self, name: str):
+        """Удаляет профиль и его данные."""
+        if name not in self.profile_browsers:
+            return
+
+        # Убираем виджет
+        browser_widget = self.profile_browsers.pop(name)
+        self.browser_stack.removeWidget(browser_widget)
+        browser_widget.deleteLater()
+
+        # Убираем из конфига
+        if name in self.app_data["profiles"]:
+            del self.app_data["profiles"][name]
+
+        # Удаляем хранилище
+        pid = profile_storage_id(name)
+        storage_path = get_app_dir() / "storage" / pid
+        try:
+            if storage_path.exists():
+                shutil.rmtree(storage_path, ignore_errors=True)
+        except Exception:
+            pass
+
+        self.save_config()
+
+        # Переключаемся на первый оставшийся
+        if self.browser_stack.count() > 0:
+            self.switch_profile(0)
+
+        self._refresh_sidebar()
+
+    def add_new_profile(self):
+        text, ok = QInputDialog.getText(self, "Новый аккаунт", "Название профиля:")
+        if ok and text.strip():
+            self.add_profile(text.strip())
+
+    def switch_profile(self, index: int):
+        if 0 <= index < self.browser_stack.count():
+            self.browser_stack.setCurrentIndex(index)
+            self.sidebar.set_active(index)
+            self._update_top_profile_label()
+
+            # Обновляем статус-бар
+            browser = self.get_active_browser()
+            if browser:
+                try:
+                    url = browser.browser.url().toString()
+                    self.status_bar.update_url(url)
+                    self.status_bar.update_zoom(browser.browser.zoomFactor())
+                except Exception:
+                    pass
+
+    def get_active_browser(self) -> Optional[ProfileBrowser]:
+        return self.browser_stack.currentWidget()
+
+    def open_settings(self):
+        SettingsDialog(self).exec()
+
+    def show_toast(self, message: str, icon: str = "ℹ️",
+                   duration: int = 3000, toast_type: str = "info"):
+        try:
+            ToastNotification(self, message, icon, duration, toast_type)
+        except Exception:
+            pass
+
+    def go_back(self):
+        active = self.get_active_browser()
+        if not active:
+            return
+
+        try:
+            if active.browser.history().canGoBack():
+                active.browser.back()
+        except Exception:
+            pass
+
+    def go_forward(self):
+        active = self.get_active_browser()
+        if not active:
+            return
+
+        try:
+            if active.browser.history().canGoForward():
+                active.browser.forward()
+        except Exception:
+            pass
+
+    def reload_page(self):
+        active = self.get_active_browser()
+        if not active:
+            return
+
+        try:
+            active.browser.reload()
+        except Exception:
+            pass
+
+
+# ─────────────────────────────────────────────
+# Точка входа
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    apply_startup_proxy_env()
+
+    try:
+        if hasattr(Qt.ApplicationAttribute, "AA_EnableHighDpiScaling"):
+            QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
+    except Exception:
+        pass
+
+    try:
+        if hasattr(Qt.ApplicationAttribute, "AA_UseHighDpiPixmaps"):
+            QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
+    except Exception:
+        pass
+
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+
+    # Устанавливаем шрифт Segoe UI для Windows
+    if platform.system() == "Windows":
+        font = QFont("Segoe UI", 10)
+        app.setFont(font)
+
+    # Тёмная палитра для Fusion
+    from PyQt6.QtGui import QPalette
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(Colors.BG_DARKEST))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(Colors.TEXT_PRIMARY))
+    palette.setColor(QPalette.ColorRole.Base, QColor(Colors.BG_SECONDARY))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(Colors.BG_ELEVATED))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(Colors.BG_ELEVATED))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor(Colors.TEXT_PRIMARY))
+    palette.setColor(QPalette.ColorRole.Text, QColor(Colors.TEXT_PRIMARY))
+    palette.setColor(QPalette.ColorRole.Button, QColor(Colors.BG_SECONDARY))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(Colors.TEXT_PRIMARY))
+    palette.setColor(QPalette.ColorRole.BrightText, QColor(Colors.DANGER))
+    palette.setColor(QPalette.ColorRole.Link, QColor(Colors.ACCENT))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(Colors.ACCENT))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+
+    # Disabled state
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor(Colors.TEXT_MUTED))
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor(Colors.TEXT_MUTED))
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor(Colors.TEXT_MUTED))
+
+    app.setPalette(palette)
+
+    window = MaxApp()
+    apply_qt_proxy(window.app_data.get("global", {}).get("proxy", {}))
+
+    window.show()
+    sys.exit(app.exec())

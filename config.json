@@ -1,0 +1,28 @@
+{
+    "global": {
+        "close_to_tray": true,
+        "proxy": {
+            "type": "Нет",
+            "host": "",
+            "port": ""
+        }
+    },
+    "profiles": {
+        "Основной аккаунт": {
+            "mask": "macOS (Safari)",
+            "theme": "Telegram Dark",
+            "zoom": "100%",
+            "webrtc_leak": true,
+            "canvas_noise": true,
+            "adblock": false,
+            "hide_scrollbars": true,
+            "audio_noise": true,
+            "mute_audio": false,
+            "proxy": {
+                "type": "Нет",
+                "host": "",
+                "port": ""
+            }
+        }
+    }
+}
