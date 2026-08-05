@@ -1,19 +1,3 @@
-"""
-MAX Desktop v2.0.0 — Главное окно приложения и точка входа.
-
-Структура проекта:
-    core/
-        __init__.py
-        constants.py   — версия, цвета, утилиты, маски, темы, HTML
-        network.py     — прокси, настройки WebEngine
-    ui/
-        __init__.py
-        widgets.py     — TopBar, Sidebar, StatusBar, ToastNotification
-        browser.py     — CustomWebView, CustomWebPage, ProfileBrowser
-        dialogs.py     — SettingsDialog, ShortcutsOverlay
-    app.py             — MaxApp (главное окно) + точка входа
-"""
-
 import sys
 import os
 import json
