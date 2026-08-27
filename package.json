@@ -1,0 +1,62 @@
+{
+  "name": "max-desktop-portable",
+  "productName": "MAX Desktop",
+  "version": "2.5.0",
+  "description": "MAX Desktop Portable - быстрый клиент без слежки, с маскировкой отпечатков и мультиаккаунтом",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win portable",
+    "build:dir": "electron-builder --dir",
+    "build:nsis": "electron-builder --win nsis"
+  },
+  "keywords": [
+    "max",
+    "messenger",
+    "portable",
+    "privacy",
+    "antidetect"
+  ],
+  "author": "MAX Dev",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "ru.max.desktop.portable",
+    "productName": "MAX Desktop",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "icon": "max.ico",
+      "executableName": "MAX-Desktop-Portable",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "portable": {
+      "artifactName": "MAX-Desktop-Portable.exe",
+      "unpackDirName": "max_portable_data"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "max.ico",
+      "uninstallerIcon": "max.ico",
+      "installerHeaderIcon": "max.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MAX Desktop",
+      "deleteAppDataOnUninstall": false,
+      "menuCategory": "MAX",
+      "artifactName": "MAX-Desktop-Setup-${version}.exe",
+      "include": "installer.nsh"
+    },
+    "files": [
+      "src/**/*",
+      "max.ico",
+      "package.json"
+    ]
+  }
+}

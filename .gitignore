@@ -1,0 +1,43 @@
+# Node & Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+*.exe
+*.zip
+*.7z
+
+# App Local Storage & User Data (Strict Privacy & Portability)
+storage/
+.window_state.json
+*.log
+*.tmp
+
+# Python cache (legacy)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+app.py.bak
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp

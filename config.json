@@ -5,7 +5,9 @@
             "type": "Нет",
             "host": "",
             "port": ""
-        }
+        },
+        "save_window_state": true,
+        "download_path": ""
     },
     "profiles": {
         "Основной аккаунт": {

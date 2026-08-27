@@ -1,4 +1,4 @@
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.5.0";
 const APP_NAME = "MAX Desktop";
 const DEFAULT_URL = "https://web.max.ru/login";
 
