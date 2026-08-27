@@ -1,3 +1,16 @@
+> [!TIP]
+> <img src="https://omochikaeri.moe/affiliate/maeko.gif" alt="88x31 badge of https://t.me/wlcvpn_bot" /> **Ищете VPN, который работает без перебоев?**
+> 
+> Я открыл свой надежный VPN-сервис в Telegram!
+> 
+> ✅ **Никаких отвалов и мертвых серверов**
+> ✅ **Максимальная скорость и стабильный обход ВСЕХ блокировок**
+> ✅ **Настроил один раз и забыл!**
+> 
+> <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Travel%20and%20places/Rocket.png" alt="Rocket" width="25" height="25" /> Настройка занимает **всего 1 минуту**, а при переходе в бота вы получаете **FREE доступ на 24 часа!**
+> 
+> 👉 **Забрать бесплатный доступ:** [@wlcvpn_bot](https://t.me/wlcvpn_bot?start=gittra)
+
 # ✦ MAX Desktop Portable (Node.js / Electron Edition)
 
 > **Быстрый, приватный и полностью портативный клиент для мессенджера MAX (`web.max.ru`) без слежки, с маскировкой отпечатков, изолированным мультиаккаунтом и нативным десктопным интерфейсом.**
