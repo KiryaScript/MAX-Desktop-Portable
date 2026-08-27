@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' https: file: data: blob:;">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MAX Desktop</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app-root">
+    <!-- Sleek Native Frameless Titlebar -->
+    <header id="top-bar">
+      <div class="drag-region"></div>
+      
+      <div class="top-bar-left no-drag">
+        <div class="app-brand">
+          <span class="app-logo">✦</span>
+          <span class="app-title">MAX Desktop</span>
+          <span class="app-version" id="app-version-tag">v2.0.0</span>
+        </div>
+      </div>
+
+      <div class="top-bar-center no-drag">
+        <div class="account-badge" id="active-profile-pill" title="Текущий активный аккаунт">
+          <span class="account-dot" id="connection-dot">●</span>
+          <span id="active-profile-name">Основной аккаунт</span>
+        </div>
+      </div>
+
+      <div class="top-bar-right no-drag">
+        <button id="win-btn-min" class="win-btn" title="Свернуть">
+          <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
+        </button>
+        <button id="win-btn-max" class="win-btn" title="Развернуть">
+          <svg id="max-icon-svg" width="10" height="10" viewBox="0 0 10 10"><path d="M0,0v10h10V0H0z M9,9H1V1h8V9z" fill="currentColor"/></svg>
+        </button>
+        <button id="win-btn-close" class="win-btn win-btn-close" title="Закрыть">
+          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1,0L0,1l4,4L0,9l1,1l4,-4l4,4l1,-1L6,5l4,-4L9,0L5,4L1,0z" fill="currentColor"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- App Body Area -->
+    <div id="app-body">
+      <!-- Left Sidebar (Account Switcher) -->
+      <aside id="sidebar">
+        <div class="sidebar-profiles-scroll" id="sidebar-profiles">
+          <!-- Profile avatar buttons dynamically injected here -->
+        </div>
+
+        <div class="sidebar-divider"></div>
+
+        <div class="sidebar-actions">
+          <button id="btn-add-profile" class="sidebar-btn sidebar-add-btn" title="Добавить аккаунт (Ctrl+T)">＋</button>
+          <button id="btn-open-settings" class="sidebar-btn sidebar-settings-btn" title="Настройки (Ctrl+Shift+S)">⚙</button>
+        </div>
+      </aside>
+
+      <!-- Main Messenger Webview Area -->
+      <main id="browser-container">
+        <!-- Guest Webviews dynamically injected here -->
+
+        <!-- Offline Overlay Screen -->
+        <div id="offline-screen" class="hidden">
+          <div class="offline-card">
+            <div class="offline-icon">📡</div>
+            <h2>Ожидание подключения</h2>
+            <p>Нет подключения к сети.<br>Клиент автоматически восстановит связь,<br>когда появится интернет.</p>
+            <div class="offline-dots">
+              <span></span><span></span><span></span>
+            </div>
+            <button id="btn-offline-retry" class="btn-retry">Повторить попытку</button>
+          </div>
+        </div>
+
+        <!-- Download Floating Card -->
+        <div id="download-panel" class="download-card hidden">
+          <div class="download-info-row">
+            <span id="dl-filename" class="dl-filename">📥 Скачивание...</span>
+            <span id="dl-stats" class="dl-stats">0%</span>
+          </div>
+          <div class="download-bar-row">
+            <div class="progress-bar-track">
+              <div id="dl-progress-fill" class="progress-bar-fill" style="width: 0%;"></div>
+            </div>
+            <button id="btn-cancel-dl" class="btn-cancel-dl" title="Отменить">✕</button>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- ── MODALS ── -->
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal-overlay hidden">
+    <div class="modal-card settings-card">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span class="modal-title">⚙  Настройки</span>
+          <span class="modal-version" id="settings-version-tag">v2.0.0</span>
+        </div>
+        <button class="modal-close-btn" id="btn-close-settings">✕</button>
+      </div>
+
+      <div class="settings-tabs-header">
+        <button class="tab-btn active" data-tab="tab-profile">Аккаунт</button>
+        <button class="tab-btn" data-tab="tab-privacy">Приватность</button>
+        <button class="tab-btn" data-tab="tab-proxy">Прокси</button>
+        <button class="tab-btn" data-tab="tab-appearance">Оформление</button>
+        <button class="tab-btn" data-tab="tab-system">Система</button>
+        <button class="tab-btn" data-tab="tab-support">Поддержка</button>
+      </div>
+
+      <div class="settings-tabs-content">
+        <!-- TAB 1: Profile -->
+        <div class="tab-pane active" id="tab-profile">
+          <div class="form-group">
+            <label for="settings-profile-select">Текущий аккаунт:</label>
+            <select id="settings-profile-select" class="form-control"></select>
+          </div>
+          <div class="form-group">
+            <label>Мультиаккаунт:</label>
+            <button id="btn-settings-add-profile" class="btn btn-success">＋  Добавить аккаунт</button>
+          </div>
+          <div class="form-group">
+            <label></label>
+            <button id="btn-settings-delete-profile" class="btn btn-danger">🗑  Удалить аккаунт</button>
+          </div>
+        </div>
+
+        <!-- TAB 2: Privacy & Stealth -->
+        <div class="tab-pane" id="tab-privacy">
+          <div class="section-title">🎭 МАСКИРОВКА УСТРОЙСТВА</div>
+          <div class="form-group">
+            <label for="settings-mask-select">Подмена ОС / Браузера:</label>
+            <select id="settings-mask-select" class="form-control"></select>
+          </div>
+
+          <div class="section-title">🛡 ЗАЩИТА И АНТИДЕТЕКТ</div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="settings-cb-webrtc">
+            <label for="settings-cb-webrtc">Запретить утечку реального IP (WebRTC Strict Relay)</label>
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="settings-cb-canvas">
+            <label for="settings-cb-canvas">Шум Canvas (Анти-трекинг отпечатков)</label>
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="settings-cb-audio">
+            <label for="settings-cb-audio">Шум AudioContext (Анти-трекинг)</label>
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="settings-cb-adblock">
+            <label for="settings-cb-adblock">Встроенный блокировщик рекламы</label>
+          </div>
+        </div>
+
+        <!-- TAB 3: Proxy -->
+        <div class="tab-pane" id="tab-proxy">
+          <div class="form-group">
+            <label for="settings-proxy-type">Тип прокси:</label>
+            <select id="settings-proxy-type" class="form-control">
+              <option value="Нет">Нет</option>
+              <option value="HTTP">HTTP</option>
+              <option value="SOCKS5">SOCKS5</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="settings-proxy-host">Хост / IP:</label>
+            <input type="text" id="settings-proxy-host" class="form-control" placeholder="127.0.0.1 или IP">
+          </div>
+          <div class="form-group">
+            <label for="settings-proxy-port">Порт:</label>
+            <input type="text" id="settings-proxy-port" class="form-control" placeholder="1080">
+          </div>
+          <div class="form-note">
+            Прокси применяется для безопасного соединения выбранного аккаунта.
+          </div>
+        </div>
+
+        <!-- TAB 4: Appearance & View -->
+        <div class="tab-pane" id="tab-appearance">
+          <div class="form-group">
+            <label for="settings-theme-select">Тема интерфейса:</label>
+            <select id="settings-theme-select" class="form-control"></select>
+          </div>
+          <div class="form-group">
+            <label for="settings-zoom-select">Масштаб интерфейса:</label>
+            <select id="settings-zoom-select" class="form-control">
+              <option value="80%">80%</option>
+              <option value="90%">90%</option>
+              <option value="100%">100% (По умолчанию)</option>
+              <option value="110%">110%</option>
+              <option value="125%">125%</option>
+              <option value="150%">150%</option>
+            </select>
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="settings-cb-scrollbars">
+            <label for="settings-cb-scrollbars">Скрыть полосы прокрутки</label>
+          </div>
+        </div>
+
+        <!-- TAB 5: System -->
+        <div class="tab-pane" id="tab-system">
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="settings-cb-mute">
+            <label for="settings-cb-mute">Отключить звук в клиенте (Mute)</label>
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="settings-cb-tray">
+            <label for="settings-cb-tray">Сворачивать в системный трей при закрытии</label>
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="settings-cb-savewindow">
+            <label for="settings-cb-savewindow">Запоминать размер и положение окна</label>
+          </div>
+
+          <div class="section-title">🗑 ДАННЫЕ И ФАЙЛЫ</div>
+          <div class="form-group">
+            <label for="settings-download-path">Папка загрузок:</label>
+            <div class="input-with-button">
+              <input type="text" id="settings-download-path" class="form-control" placeholder="Системная папка Загрузки">
+              <button id="btn-browse-downloads" class="btn btn-ghost">...</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Очистка данных:</label>
+            <button id="btn-clear-cache" class="btn btn-danger">Очистить кэш и сессию</button>
+          </div>
+          <div class="form-group">
+            <label>Папка загрузок:</label>
+            <button id="btn-open-downloads" class="btn btn-ghost">📁  Открыть папку загрузок</button>
+          </div>
+          <div class="form-group">
+            <label>Папка приложения:</label>
+            <button id="btn-open-appdir" class="btn btn-ghost">📂  Открыть каталог программы</button>
+          </div>
+        </div>
+
+        <!-- TAB 6: Support -->
+        <div class="tab-pane" id="tab-support">
+          <div class="support-description">
+            Возникли ошибки или сложности в работе клиента?<br><br>
+            Сгенерируйте диагностический отчет. Он соберёт техническую информацию о системе,
+            версиях компонентов, оперативной памяти и текущих настройках.<br><br>
+            После создания файла откроется чат разработчика в Telegram.
+          </div>
+          <button id="btn-generate-report" class="btn btn-danger btn-large">🛠  Создать отчёт и открыть Telegram</button>
+          <div class="support-meta" id="support-meta-info"></div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button id="btn-settings-cancel" class="btn btn-ghost">Отмена</button>
+        <button id="btn-settings-save" class="btn btn-primary">✓  Сохранить и применить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shortcuts Modal (F1) -->
+  <div id="shortcuts-modal" class="modal-overlay hidden">
+    <div class="modal-card shortcuts-card">
+      <div class="modal-header">
+        <span class="modal-title">⌨  Горячие клавиши</span>
+        <button class="modal-close-btn" id="btn-close-shortcuts">✕</button>
+      </div>
+      <div class="shortcuts-list">
+        <div class="shortcut-row"><span class="kbd">Ctrl + T</span><span class="desc">Добавить аккаунт</span></div>
+        <div class="shortcut-row"><span class="kbd">Ctrl + W</span><span class="desc">Свернуть в трей</span></div>
+        <div class="shortcut-row"><span class="kbd">Ctrl + R / F5</span><span class="desc">Перезагрузить клиент</span></div>
+        <div class="shortcut-row"><span class="kbd">Ctrl + Shift + S</span><span class="desc">Открыть настройки</span></div>
+        <div class="shortcut-row"><span class="kbd">Ctrl + колесо</span><span class="desc">Масштабирование</span></div>
+        <div class="shortcut-row"><span class="kbd">Ctrl + 1-9</span><span class="desc">Переключение аккаунтов</span></div>
+        <div class="shortcut-row"><span class="kbd">F1</span><span class="desc">Справка по клавишам</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Input Prompt Modal (for new profile) -->
+  <div id="prompt-modal" class="modal-overlay hidden">
+    <div class="modal-card prompt-card">
+      <div class="modal-header">
+        <span class="modal-title" id="prompt-title">Новый аккаунт</span>
+        <button class="modal-close-btn" id="btn-prompt-close">✕</button>
+      </div>
+      <div class="prompt-body">
+        <label id="prompt-label" for="prompt-input">Название аккаунта:</label>
+        <input type="text" id="prompt-input" class="form-control" autofocus>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-prompt-cancel" class="btn btn-ghost">Отмена</button>
+        <button id="btn-prompt-ok" class="btn btn-primary">ОК</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm Modal -->
+  <div id="confirm-modal" class="modal-overlay hidden">
+    <div class="modal-card confirm-card">
+      <div class="modal-header">
+        <span class="modal-title" id="confirm-title">Удалить аккаунт</span>
+        <button class="modal-close-btn" id="btn-confirm-close">✕</button>
+      </div>
+      <div class="confirm-body" id="confirm-message">
+        Удалить аккаунт? Все данные профиля будут удалены безвозвратно.
+      </div>
+      <div class="modal-footer">
+        <button id="btn-confirm-cancel" class="btn btn-ghost">Отмена</button>
+        <button id="btn-confirm-ok" class="btn btn-danger">Удалить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating Toast Notifications -->
+  <div id="toast-container"></div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
