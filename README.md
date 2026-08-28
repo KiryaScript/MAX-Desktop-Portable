@@ -121,3 +121,5 @@ npm run build:dir
 ## 📄 Лицензия
 
 Проект распространяется под лицензией **MIT**. Подробности в файле [LICENSE](file:///D:/Desktop/MAX-Desktop-Portable-main/LICENSE).
+
+Telegram разработчика: @devjijlk
